@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import pool from './db.js';
+import { supabase } from './supabase-fixed.js';
 
 dotenv.config();
 
@@ -29,32 +29,58 @@ app.get('/api/dashboard/kpi', async (req, res) => {
     const { days = 30 } = req.query;
     const { start, end } = getDateRange(parseInt(days));
 
-    const totalLeads = await pool.query(
-      'SELECT COUNT(*) as count FROM leads WHERE created_at >= $1 AND created_at <= $2',
-      [start, end]
-    );
+    console.log(`📊 KPI Request: ${days} days (${start} to ${end})`);
 
-    const contactedLeads = await pool.query(
-      "SELECT COUNT(*) as count FROM leads WHERE status != 'New' AND created_at >= $1 AND created_at <= $2",
-      [start, end]
-    );
+    // Get total leads
+    const { data: totalLeadsData, error: totalError } = await supabase
+      .from('leads')
+      .select('id')
+      .gte('created_at', start)
+      .lte('created_at', end);
 
-    const salesClosed = await pool.query(
-      "SELECT COUNT(*) as count FROM leads WHERE status = 'Converted' AND created_at >= $1 AND created_at <= $2",
-      [start, end]
-    );
+    if (totalError) {
+      console.error('Total leads error:', totalError);
+      return res.status(500).json({ error: 'Failed to fetch total leads' });
+    }
 
-    const totalRevenue = await pool.query(
-      "SELECT COALESCE(SUM(amount), 0) as total FROM leads WHERE status = 'Converted' AND created_at >= $1 AND created_at <= $2",
-      [start, end]
-    );
+    // Get contacted leads
+    const { data: contactedLeadsData, error: contactedError } = await supabase
+      .from('leads')
+      .select('id')
+      .neq('status', 'New')
+      .gte('created_at', start)
+      .lte('created_at', end);
 
-    res.json({
-      totalLeads: parseInt(totalLeads.rows[0].count),
-      contactedLeads: parseInt(contactedLeads.rows[0].count),
-      salesClosed: parseInt(salesClosed.rows[0].count),
-      totalRevenue: parseFloat(totalRevenue.rows[0].total) || 0
-    });
+    if (contactedError) {
+      console.error('Contacted leads error:', contactedError);
+      return res.status(500).json({ error: 'Failed to fetch contacted leads' });
+    }
+
+    // Get sales closed
+    const { data: salesClosedData, error: salesError } = await supabase
+      .from('leads')
+      .select('id, amount')
+      .eq('status', 'Converted')
+      .gte('created_at', start)
+      .lte('created_at', end);
+
+    if (salesError) {
+      console.error('Sales closed error:', salesError);
+      return res.status(500).json({ error: 'Failed to fetch sales data' });
+    }
+
+    // Calculate total revenue
+    const totalRevenue = salesClosedData?.reduce((sum, lead) => sum + (lead.amount || 0), 0) || 0;
+
+    const result = {
+      totalLeads: totalLeadsData?.length || 0,
+      contactedLeads: contactedLeadsData?.length || 0,
+      salesClosed: salesClosedData?.length || 0,
+      totalRevenue: parseFloat(totalRevenue) || 0
+    };
+
+    console.log('✅ KPI Response:', result);
+    res.json(result);
   } catch (err) {
     console.error('KPI Error:', err);
     res.status(500).json({ error: 'Failed to fetch KPI data' });
@@ -67,13 +93,18 @@ app.get('/api/dashboard/lead-status', async (req, res) => {
     const { days = 30 } = req.query;
     const { start, end } = getDateRange(parseInt(days));
 
-    const result = await pool.query(
-      `SELECT status, COUNT(*) as count FROM leads 
-       WHERE created_at >= $1 AND created_at <= $2
-       GROUP BY status
-       ORDER BY count DESC`,
-      [start, end]
-    );
+    console.log(`📊 Lead Status Request: ${days} days (${start} to ${end})`);
+
+    const { data: leadsData, error } = await supabase
+      .from('leads')
+      .select('status')
+      .gte('created_at', start)
+      .lte('created_at', end);
+
+    if (error) {
+      console.error('Lead status error:', error);
+      return res.status(500).json({ error: 'Failed to fetch lead status data' });
+    }
 
     const statuses = ['New', 'Contacted', 'Follow Up', 'Appointment Booked', 'Converted', 'Lost'];
     const statusMap = {};
@@ -83,9 +114,11 @@ app.get('/api/dashboard/lead-status', async (req, res) => {
       statusMap[status] = 0;
     });
 
-    // Populate with actual counts
-    result.rows.forEach(row => {
-      statusMap[row.status] = parseInt(row.count);
+    // Count actual statuses
+    leadsData?.forEach(lead => {
+      if (statusMap.hasOwnProperty(lead.status)) {
+        statusMap[lead.status]++;
+      }
     });
 
     const responseData = statuses.map(status => ({
@@ -93,6 +126,7 @@ app.get('/api/dashboard/lead-status', async (req, res) => {
       count: statusMap[status]
     }));
 
+    console.log('✅ Lead Status Response:', responseData);
     res.json(responseData);
   } catch (err) {
     console.error('Lead Status Error:', err);
@@ -106,14 +140,19 @@ app.get('/api/dashboard/sales-trend', async (req, res) => {
     const { days = 30 } = req.query;
     const { start, end } = getDateRange(parseInt(days));
 
-    const result = await pool.query(
-      `SELECT converted_date as date, COALESCE(SUM(amount), 0) as revenue
-       FROM leads
-       WHERE status = 'Converted' AND converted_date >= $1 AND converted_date <= $2
-       GROUP BY converted_date
-       ORDER BY date ASC`,
-      [start, end]
-    );
+    console.log(`📊 Sales Trend Request: ${days} days (${start} to ${end})`);
+
+    const { data: salesData, error } = await supabase
+      .from('leads')
+      .select('converted_date, amount')
+      .eq('status', 'Converted')
+      .gte('converted_date', start)
+      .lte('converted_date', end);
+
+    if (error) {
+      console.error('Sales trend error:', error);
+      return res.status(500).json({ error: 'Failed to fetch sales trend data' });
+    }
 
     // Fill in missing dates with 0 revenue
     const dateMap = {};
@@ -126,9 +165,10 @@ app.get('/api/dashboard/sales-trend', async (req, res) => {
       currentDate.setDate(currentDate.getDate() + 1);
     }
 
-    result.rows.forEach(row => {
-      if (row.date) {
-        dateMap[row.date] = parseFloat(row.revenue);
+    // Sum revenue by date
+    salesData?.forEach(sale => {
+      if (sale.converted_date && sale.amount) {
+        dateMap[sale.converted_date] = (dateMap[sale.converted_date] || 0) + parseFloat(sale.amount);
       }
     });
 
@@ -137,6 +177,7 @@ app.get('/api/dashboard/sales-trend', async (req, res) => {
       revenue: parseFloat(revenue)
     }));
 
+    console.log(`✅ Sales Trend Response: ${responseData.length} days`);
     res.json(responseData);
   } catch (err) {
     console.error('Sales Trend Error:', err);
@@ -146,9 +187,15 @@ app.get('/api/dashboard/sales-trend', async (req, res) => {
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', database: 'supabase' });
 });
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Sales Dashboard Server running on port ${PORT}`);
+  console.log(`📊 API Endpoints:`);
+  console.log(`   GET /api/health - Health check`);
+  console.log(`   GET /api/dashboard/kpi?days=30 - KPI summary`);
+  console.log(`   GET /api/dashboard/lead-status?days=30 - Lead status summary`);
+  console.log(`   GET /api/dashboard/sales-trend?days=30 - Sales trend data`);
+  console.log(`🌐 Frontend should connect to: http://localhost:${PORT}`);
 });
