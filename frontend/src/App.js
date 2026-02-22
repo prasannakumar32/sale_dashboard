@@ -20,9 +20,9 @@ function App() {
     setError(null);
     try {
       const [kpiRes, leadStatusRes, salesTrendRes] = await Promise.all([
-        axios.get(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/api/dashboard/kpi?days=${selectedDays}`),
-        axios.get(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/api/dashboard/lead-status?days=${selectedDays}`),
-        axios.get(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/api/dashboard/sales-trend?days=${selectedDays}`)
+        axios.get(`${process.env.REACT_APP_API_URL || ''}/api/dashboard/kpi?days=${selectedDays}`),
+        axios.get(`${process.env.REACT_APP_API_URL || ''}/api/dashboard/lead-status?days=${selectedDays}`),
+        axios.get(`${process.env.REACT_APP_API_URL || ''}/api/dashboard/sales-trend?days=${selectedDays}`)
       ]);
 
       setKpi(kpiRes.data);
